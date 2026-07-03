@@ -1,0 +1,90 @@
+import uuid
+from unittest.mock import AsyncMock
+
+import pytest
+
+from filmcortex.models.movie import MediaType, Movie
+from filmcortex.repositories.external_metadata_repository import ExternalMetadataRecord
+from filmcortex.services.tmdb_ingestion import TMDbIngestionService
+
+
+@pytest.fixture
+def tmdb_payload() -> dict:
+    return {
+        "id": 550,
+        "title": "Fight Club",
+        "original_title": "Fight Club",
+    }
+
+
+@pytest.fixture
+def ingestion_service(tmdb_payload: dict) -> TMDbIngestionService:
+    tmdb_client = AsyncMock()
+    tmdb_client.get_movie.return_value = tmdb_payload
+
+    movie_repository = AsyncMock()
+    created_movie = Movie(
+        id=uuid.uuid4(),
+        canonical_title="Fight Club",
+        media_type=MediaType.FILM,
+    )
+    movie_repository.create.return_value = created_movie
+
+    metadata_repository = AsyncMock()
+    metadata_repository.get_by_provider.return_value = None
+
+    return TMDbIngestionService(
+        tmdb_client=tmdb_client,
+        movie_repository=movie_repository,
+        metadata_repository=metadata_repository,
+    )
+
+
+@pytest.mark.asyncio
+async def test_ingest_movie_inserts_new_record(
+    ingestion_service: TMDbIngestionService,
+) -> None:
+    result = await ingestion_service.ingest_movie(550)
+    assert result == "inserted"
+    ingestion_service._movie_repository.create.assert_awaited_once()
+    ingestion_service._metadata_repository.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ingest_movie_skips_unchanged_payload(
+    ingestion_service: TMDbIngestionService,
+    tmdb_payload: dict,
+) -> None:
+    from filmcortex.utils.payload import payload_fingerprint
+
+    ingestion_service._metadata_repository.get_by_provider.return_value = ExternalMetadataRecord(
+        id=uuid.uuid4(),
+        movie_id=uuid.uuid4(),
+        provider="tmdb",
+        provider_id="550",
+        payload=tmdb_payload,
+        payload_fingerprint=payload_fingerprint(tmdb_payload),
+    )
+
+    result = await ingestion_service.ingest_movie(550)
+    assert result == "skipped"
+    ingestion_service._metadata_repository.update_payload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ingest_movie_updates_changed_payload(
+    ingestion_service: TMDbIngestionService,
+) -> None:
+    ingestion_service._metadata_repository.get_by_provider.return_value = ExternalMetadataRecord(
+        id=uuid.uuid4(),
+        movie_id=uuid.uuid4(),
+        provider="tmdb",
+        provider_id="550",
+        payload={"id": 550, "title": "Old Title"},
+        payload_fingerprint="different",
+    )
+
+    result = await ingestion_service.ingest_movie(550)
+    assert result == "updated"
+    ingestion_service._movie_repository.update_title.assert_awaited_once()
+    ingestion_service._metadata_repository.update_payload.assert_awaited_once()
