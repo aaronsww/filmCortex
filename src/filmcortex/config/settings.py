@@ -22,5 +22,8 @@ class Settings(BaseSettings):
 
     tmdb_api_key: str = ""
 
+    embedding_model_name: str = "BAAI/bge-small-en-v1.5"
+    embedding_dimensions: int = 384
+
 
 settings = Settings()

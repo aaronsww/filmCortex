@@ -38,6 +38,25 @@ Optional integration test (requires a running database and `DATABASE_URL` in the
 uv run pytest tests/migrations/test_002_enable_pgvector.py -m integration
 ```
 
+## Offline pipeline
+
+Heavy AI work runs offline in `pipeline/`; the API serves only precomputed data. Jobs read from PostgreSQL and (except ingestion) never call external APIs.
+
+Ingest movies from TMDb (requires `TMDB_API_KEY`):
+
+```bash
+uv run python -m pipeline.jobs.ingest_tmdb
+```
+
+Generate embeddings for movies that don't have one yet (requires the `pipeline` extra):
+
+```bash
+uv sync --extra pipeline
+uv run python -m pipeline.jobs.generate_embeddings
+```
+
+The embedding job is idempotent: it only processes movies without an embedding, so it is safe to re-run.
+
 ## Project layout
 
 See repository structure in the codebase. Heavy AI work runs in `pipeline/`; the API in `src/filmcortex/` serves precomputed data only.

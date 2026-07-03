@@ -19,7 +19,10 @@ class TMDbClient:
     async def get_movie(self, movie_id: int) -> dict:
         response = await self._client.get(
             f"/movie/{movie_id}",
-            params={"api_key": self._api_key},
+            params={
+                "api_key": self._api_key,
+                "append_to_response": "credits,keywords",
+            },
         )
         response.raise_for_status()
         return response.json()
