@@ -5,8 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from filmcortex.db.session import async_session_factory
 from filmcortex.repositories.external_metadata_repository import ExternalMetadataRepository
+from filmcortex.repositories.movie_embedding_repository import MovieEmbeddingRepository
 from filmcortex.repositories.movie_repository import MovieRepository
 from filmcortex.services.movie_query import MovieQueryService
+from filmcortex.services.movie_similarity import MovieSimilarityService
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -31,7 +33,19 @@ async def get_external_metadata_repository(
     yield ExternalMetadataRepository(session)
 
 
+async def get_movie_embedding_repository(
+    session: AsyncSession = Depends(get_db),
+) -> AsyncGenerator[MovieEmbeddingRepository, None]:
+    yield MovieEmbeddingRepository(session)
+
+
 async def get_movie_query_service(
     metadata_repository: ExternalMetadataRepository = Depends(get_external_metadata_repository),
 ) -> MovieQueryService:
     return MovieQueryService(metadata_repository)
+
+
+async def get_movie_similarity_service(
+    embedding_repository: MovieEmbeddingRepository = Depends(get_movie_embedding_repository),
+) -> MovieSimilarityService:
+    return MovieSimilarityService(embedding_repository)

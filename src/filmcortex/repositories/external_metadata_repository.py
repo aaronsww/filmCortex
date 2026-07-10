@@ -4,7 +4,6 @@ from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
 from filmcortex.models.external_metadata import ExternalMetadata
 from filmcortex.models.movie import Movie
@@ -85,7 +84,6 @@ class ExternalMetadataRepository:
             select(Movie, ExternalMetadata)
             .join(ExternalMetadata, ExternalMetadata.movie_id == Movie.id)
             .where(ExternalMetadata.is_active.is_(True))
-            .options(joinedload(Movie.external_metadata))
             .order_by(Movie.canonical_title)
         )
         return list(result.all())

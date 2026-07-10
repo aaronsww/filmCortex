@@ -29,6 +29,7 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      PYTHONPATH: /app/src
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-filmcortex}:${POSTGRES_PASSWORD:-filmcortex}@db:5432/${POSTGRES_DB:-filmcortex}
     ports:
       - "${API_PORT:-8000}:8000"

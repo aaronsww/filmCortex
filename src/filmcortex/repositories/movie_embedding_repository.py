@@ -45,6 +45,30 @@ class MovieEmbeddingRepository:
         )
         await self._session.execute(stmt)
 
+    async def find_similar(
+        self,
+        movie_id: uuid.UUID,
+        limit: int = 10,
+    ) -> list[tuple[Movie, ExternalMetadata, float]]:
+        source = await self._session.get(MovieEmbedding, movie_id)
+        if source is None:
+            return []
+
+        distance = MovieEmbedding.embedding.cosine_distance(source.embedding).label("distance")
+        result = await self._session.execute(
+            select(Movie, ExternalMetadata, distance)
+            .join(MovieEmbedding, MovieEmbedding.movie_id == Movie.id)
+            .join(ExternalMetadata, ExternalMetadata.movie_id == Movie.id)
+            .where(
+                MovieEmbedding.movie_id != movie_id,
+                ExternalMetadata.is_active.is_(True),
+                ExternalMetadata.provider == TMDB_PROVIDER,
+            )
+            .order_by(distance)
+            .limit(limit)
+        )
+        return [(movie, metadata, 1.0 - distance) for movie, metadata, distance in result.all()]
+
     async def list_movies_without_embeddings(self) -> list[tuple[Movie, ExternalMetadata]]:
         result = await self._session.execute(
             select(Movie, ExternalMetadata)
