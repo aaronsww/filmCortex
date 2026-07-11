@@ -21,6 +21,16 @@ def tmdb_payload() -> dict:
 def ingestion_service(tmdb_payload: dict) -> TMDbIngestionService:
     tmdb_client = AsyncMock()
     tmdb_client.get_movie.return_value = tmdb_payload
+    tmdb_client.get_top_rated.side_effect = [
+        {"results": [{"id": 550}], "total_pages": 1},
+    ]
+    tmdb_client.get_discover.side_effect = [
+        {"results": [{"id": 551}], "total_pages": 1},
+    ]
+    tmdb_client.get_trending.side_effect = [
+        {"results": [{"id": 552}], "total_pages": 1},
+    ]
+    tmdb_client.get_list.return_value = {"items": [{"id": 553}]}
 
     movie_repository = AsyncMock()
     created_movie = Movie(
@@ -88,3 +98,31 @@ async def test_ingest_movie_updates_changed_payload(
     assert result == "updated"
     ingestion_service._movie_repository.update_title.assert_awaited_once()
     ingestion_service._metadata_repository.update_payload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ingest_top_rated(ingestion_service: TMDbIngestionService) -> None:
+    stats = await ingestion_service.ingest_top_rated()
+    assert stats.fetched == 1
+    assert stats.inserted == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_discover(ingestion_service: TMDbIngestionService) -> None:
+    stats = await ingestion_service.ingest_discover(filters={"primary_release_year": 1994})
+    assert stats.fetched == 1
+    assert stats.inserted == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_trending(ingestion_service: TMDbIngestionService) -> None:
+    stats = await ingestion_service.ingest_trending(time_window="day")
+    assert stats.fetched == 1
+    assert stats.inserted == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_list(ingestion_service: TMDbIngestionService) -> None:
+    stats = await ingestion_service.ingest_list(634)
+    assert stats.fetched == 1
+    assert stats.inserted == 1

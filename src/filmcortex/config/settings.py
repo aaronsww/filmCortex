@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     )
 
     tmdb_api_key: str = ""
+    tmdb_requests_per_second: float = 30.0
+    tmdb_export_cache_dir: str = ".cache/tmdb_exports"
 
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
     embedding_dimensions: int = 384

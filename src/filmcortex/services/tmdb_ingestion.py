@@ -1,10 +1,18 @@
 import logging
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 from filmcortex.integrations.tmdb.client import TMDbClient
 from filmcortex.integrations.tmdb.constants import TMDB_PAYLOAD_VERSION, TMDB_PROVIDER
+from filmcortex.integrations.tmdb.exports import (
+    diff_movie_ids,
+    download_daily_export,
+    find_previous_export,
+    parse_movie_ids,
+)
 from filmcortex.models.movie import MediaType
 from filmcortex.repositories.external_metadata_repository import ExternalMetadataRepository
 from filmcortex.repositories.movie_repository import MovieRepository
@@ -12,7 +20,7 @@ from filmcortex.utils.payload import payload_fingerprint
 
 logger = logging.getLogger(__name__)
 
-IngestResult = Literal["inserted", "updated", "skipped"]
+IngestResult = Literal["inserted", "updated", "skipped", "failed"]
 
 
 @dataclass
@@ -21,6 +29,22 @@ class IngestionStats:
     inserted: int = 0
     updated: int = 0
     skipped: int = 0
+    failed: int = 0
+
+    def merge(self, other: "IngestionStats") -> None:
+        self.fetched += other.fetched
+        self.inserted += other.inserted
+        self.updated += other.updated
+        self.skipped += other.skipped
+        self.failed += other.failed
+
+
+@dataclass
+class ExportIngestionStats:
+    export_path: Path | None = None
+    total_ids: int = 0
+    new_ids: int = 0
+    ingestion: IngestionStats = field(default_factory=IngestionStats)
 
 
 class TMDbIngestionService:
@@ -35,7 +59,12 @@ class TMDbIngestionService:
         self._metadata_repository = metadata_repository
 
     async def ingest_movie(self, tmdb_id: int) -> IngestResult:
-        payload = await self._tmdb_client.get_movie(tmdb_id)
+        try:
+            payload = await self._tmdb_client.get_movie(tmdb_id)
+        except Exception:
+            logger.exception("movie_fetch_failed", extra={"tmdb_id": tmdb_id})
+            return "failed"
+
         provider_id = str(payload["id"])
         title = payload.get("title") or payload.get("original_title") or "Unknown"
         fingerprint = payload_fingerprint(payload)
@@ -95,20 +124,128 @@ class TMDbIngestionService:
         )
         return "updated"
 
-    async def ingest_popular_page(self, page: int = 1) -> IngestionStats:
-        stats = IngestionStats()
-        response = await self._tmdb_client.get_popular(page=page)
-        results = response.get("results", [])
-        stats.fetched = len(results)
-
-        for item in results:
-            tmdb_id = item["id"]
+    async def ingest_ids(self, tmdb_ids: list[int]) -> IngestionStats:
+        stats = IngestionStats(fetched=len(tmdb_ids))
+        for tmdb_id in tmdb_ids:
             result = await self.ingest_movie(tmdb_id)
             if result == "inserted":
                 stats.inserted += 1
             elif result == "updated":
                 stats.updated += 1
-            else:
+            elif result == "skipped":
                 stats.skipped += 1
+            else:
+                stats.failed += 1
+        return stats
+
+    async def ingest_from_paged_endpoint(
+        self,
+        fetch_page: Callable[[int], Awaitable[dict]],
+        *,
+        max_pages: int | None = None,
+        start_page: int = 1,
+    ) -> IngestionStats:
+        stats = IngestionStats()
+        page = start_page
+
+        while True:
+            response = await fetch_page(page)
+            results = response.get("results", [])
+            stats.fetched += len(results)
+
+            for item in results:
+                tmdb_id = item["id"]
+                result = await self.ingest_movie(tmdb_id)
+                if result == "inserted":
+                    stats.inserted += 1
+                elif result == "updated":
+                    stats.updated += 1
+                elif result == "skipped":
+                    stats.skipped += 1
+                else:
+                    stats.failed += 1
+
+            total_pages = response.get("total_pages", page)
+            if not results or page >= total_pages:
+                break
+            if max_pages is not None and page - start_page + 1 >= max_pages:
+                break
+            page += 1
 
         return stats
+
+    async def ingest_popular_page(self, page: int = 1) -> IngestionStats:
+        return await self.ingest_from_paged_endpoint(
+            lambda current_page: self._tmdb_client.get_popular(page=current_page),
+            max_pages=1,
+            start_page=page,
+        )
+
+    async def ingest_top_rated(self, *, max_pages: int | None = None) -> IngestionStats:
+        return await self.ingest_from_paged_endpoint(
+            lambda page: self._tmdb_client.get_top_rated(page=page),
+            max_pages=max_pages,
+        )
+
+    async def ingest_discover(
+        self,
+        *,
+        filters: dict[str, str | int | float],
+        max_pages: int | None = None,
+    ) -> IngestionStats:
+        return await self.ingest_from_paged_endpoint(
+            lambda page: self._tmdb_client.get_discover(page=page, **filters),
+            max_pages=max_pages,
+        )
+
+    async def ingest_trending(
+        self,
+        *,
+        time_window: str = "day",
+        max_pages: int | None = None,
+    ) -> IngestionStats:
+        return await self.ingest_from_paged_endpoint(
+            lambda page: self._tmdb_client.get_trending(time_window=time_window, page=page),
+            max_pages=max_pages,
+        )
+
+    async def ingest_list(self, list_id: int) -> IngestionStats:
+        response = await self._tmdb_client.get_list(list_id)
+        items = response.get("items") or []
+        ids = [item["id"] for item in items if "id" in item]
+        return await self.ingest_ids(ids)
+
+    async def ingest_daily_export(
+        self,
+        cache_dir: Path,
+        *,
+        ingest_all: bool = False,
+        limit: int | None = None,
+    ) -> ExportIngestionStats:
+        export_path = await download_daily_export(cache_dir)
+        all_ids = parse_movie_ids(export_path)
+
+        if ingest_all:
+            target_ids = all_ids
+        else:
+            previous_path = find_previous_export(cache_dir, export_path)
+            if previous_path is None:
+                existing = await self._metadata_repository.get_existing_provider_ids(
+                    provider=TMDB_PROVIDER,
+                    provider_ids=[str(movie_id) for movie_id in all_ids],
+                )
+                target_ids = [movie_id for movie_id in all_ids if str(movie_id) not in existing]
+            else:
+                previous_ids = parse_movie_ids(previous_path)
+                target_ids = diff_movie_ids(all_ids, previous_ids)
+
+        if limit is not None:
+            target_ids = target_ids[:limit]
+
+        ingestion_stats = await self.ingest_ids(target_ids)
+        return ExportIngestionStats(
+            export_path=export_path,
+            total_ids=len(all_ids),
+            new_ids=len(target_ids),
+            ingestion=ingestion_stats,
+        )

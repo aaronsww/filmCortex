@@ -25,4 +25,5 @@ htmlcov/
 
 # Data (local imports / caches)
 data/
+.cache/
 *.csv

@@ -79,6 +79,29 @@ class ExternalMetadataRepository:
             )
         )
 
+    async def get_existing_provider_ids(
+        self,
+        provider: str,
+        provider_ids: list[str],
+        *,
+        chunk_size: int = 1000,
+    ) -> set[str]:
+        if not provider_ids:
+            return set()
+
+        existing: set[str] = set()
+        for start in range(0, len(provider_ids), chunk_size):
+            chunk = provider_ids[start : start + chunk_size]
+            result = await self._session.execute(
+                select(ExternalMetadata.provider_id).where(
+                    ExternalMetadata.provider == provider,
+                    ExternalMetadata.provider_id.in_(chunk),
+                    ExternalMetadata.is_active.is_(True),
+                )
+            )
+            existing.update(result.scalars().all())
+        return existing
+
     async def list_active_with_movies(self) -> list[tuple[Movie, ExternalMetadata]]:
         result = await self._session.execute(
             select(Movie, ExternalMetadata)
