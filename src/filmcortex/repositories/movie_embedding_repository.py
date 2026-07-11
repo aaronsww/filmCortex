@@ -1,9 +1,8 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql import func
 
 from filmcortex.integrations.tmdb.constants import TMDB_PROVIDER
 from filmcortex.models.external_metadata import ExternalMetadata
@@ -69,8 +68,26 @@ class MovieEmbeddingRepository:
         )
         return [(movie, metadata, 1.0 - distance) for movie, metadata, distance in result.all()]
 
-    async def list_movies_without_embeddings(self) -> list[tuple[Movie, ExternalMetadata]]:
+    async def count_movies_without_embeddings(self) -> int:
         result = await self._session.execute(
+            select(func.count())
+            .select_from(Movie)
+            .join(ExternalMetadata, ExternalMetadata.movie_id == Movie.id)
+            .outerjoin(MovieEmbedding, MovieEmbedding.movie_id == Movie.id)
+            .where(
+                ExternalMetadata.is_active.is_(True),
+                ExternalMetadata.provider == TMDB_PROVIDER,
+                MovieEmbedding.movie_id.is_(None),
+            )
+        )
+        return int(result.scalar_one())
+
+    async def list_movies_without_embeddings(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> list[tuple[Movie, ExternalMetadata]]:
+        stmt = (
             select(Movie, ExternalMetadata)
             .join(ExternalMetadata, ExternalMetadata.movie_id == Movie.id)
             .outerjoin(MovieEmbedding, MovieEmbedding.movie_id == Movie.id)
@@ -81,4 +98,7 @@ class MovieEmbeddingRepository:
             )
             .order_by(Movie.canonical_title)
         )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = await self._session.execute(stmt)
         return list(result.all())

@@ -10,11 +10,18 @@ Then run generate_embeddings afterward:
 import argparse
 import asyncio
 
+from filmcortex.config.settings import settings
 from filmcortex.integrations.tmdb.constants import DISCOVER_SWEEPS
 from pipeline.shared.job_context import ingestion_job, print_ingestion_stats
+from pipeline.shared.limits import resolve_limit
 
 
-async def run(*, export_limit: int | None, discover_max_pages: int | None) -> None:
+async def run(
+    *,
+    export_limit: int,
+    top_rated_limit: int,
+    discover_limit: int,
+) -> None:
     async with ingestion_job() as context:
         print("Step 1/3: Download daily export and ingest missing IDs")
         export_stats = await context.ingestion_service.ingest_daily_export(
@@ -26,18 +33,24 @@ async def run(*, export_limit: int | None, discover_max_pages: int | None) -> No
         print_ingestion_stats(export_stats.ingestion, label="Export")
 
         print("Step 2/3: Ingest top-rated movies")
-        top_rated_stats = await context.ingestion_service.ingest_top_rated()
+        top_rated_stats = await context.ingestion_service.ingest_top_rated(
+            max_movies=top_rated_limit,
+        )
         print_ingestion_stats(top_rated_stats, label="Top rated")
 
-        print(f"Step 3/3: Run {len(DISCOVER_SWEEPS)} discover sweeps")
+        print(f"Step 3/3: Run discover sweeps (budget: {discover_limit} movies)")
         discover_total = None
+        remaining = discover_limit
         for index, filters in enumerate(DISCOVER_SWEEPS, start=1):
+            if remaining <= 0:
+                break
             print(f"Discover sweep {index}/{len(DISCOVER_SWEEPS)}: {filters}")
             stats = await context.ingestion_service.ingest_discover(
                 filters=filters,
-                max_pages=discover_max_pages,
+                max_movies=remaining,
             )
             print_ingestion_stats(stats, label=f"Sweep {index}")
+            remaining -= stats.fetched
             if discover_total is None:
                 discover_total = stats
             else:
@@ -53,19 +66,35 @@ def main() -> None:
         "--export-limit",
         type=int,
         default=None,
-        help="Limit export IDs ingested during initial load",
+        help=(
+            "Maximum export IDs to ingest "
+            f"(default: {settings.tmdb_initial_load_limit} from TMDB_INITIAL_LOAD_LIMIT)"
+        ),
     )
     parser.add_argument(
-        "--discover-max-pages",
+        "--top-rated-limit",
         type=int,
         default=None,
-        help="Limit pages per discover sweep",
+        help=(
+            "Maximum top-rated movies to ingest "
+            f"(default: {settings.tmdb_top_rated_limit} from TMDB_TOP_RATED_LIMIT)"
+        ),
+    )
+    parser.add_argument(
+        "--discover-limit",
+        type=int,
+        default=None,
+        help=(
+            "Maximum discover movies to ingest across all sweeps "
+            f"(default: {settings.tmdb_discover_limit} from TMDB_DISCOVER_LIMIT)"
+        ),
     )
     args = parser.parse_args()
     asyncio.run(
         run(
-            export_limit=args.export_limit,
-            discover_max_pages=args.discover_max_pages,
+            export_limit=resolve_limit(args.export_limit, settings.tmdb_initial_load_limit),
+            top_rated_limit=resolve_limit(args.top_rated_limit, settings.tmdb_top_rated_limit),
+            discover_limit=resolve_limit(args.discover_limit, settings.tmdb_discover_limit),
         )
     )
 

@@ -143,18 +143,26 @@ class TMDbIngestionService:
         fetch_page: Callable[[int], Awaitable[dict]],
         *,
         max_pages: int | None = None,
+        max_movies: int | None = None,
         start_page: int = 1,
     ) -> IngestionStats:
         stats = IngestionStats()
         page = start_page
+        movies_processed = 0
 
         while True:
             response = await fetch_page(page)
             results = response.get("results", [])
-            stats.fetched += len(results)
+            if not results:
+                break
 
             for item in results:
+                if max_movies is not None and movies_processed >= max_movies:
+                    return stats
+
                 tmdb_id = item["id"]
+                movies_processed += 1
+                stats.fetched += 1
                 result = await self.ingest_movie(tmdb_id)
                 if result == "inserted":
                     stats.inserted += 1
@@ -166,7 +174,7 @@ class TMDbIngestionService:
                     stats.failed += 1
 
             total_pages = response.get("total_pages", page)
-            if not results or page >= total_pages:
+            if page >= total_pages:
                 break
             if max_pages is not None and page - start_page + 1 >= max_pages:
                 break
@@ -181,10 +189,16 @@ class TMDbIngestionService:
             start_page=page,
         )
 
-    async def ingest_top_rated(self, *, max_pages: int | None = None) -> IngestionStats:
+    async def ingest_top_rated(
+        self,
+        *,
+        max_pages: int | None = None,
+        max_movies: int | None = None,
+    ) -> IngestionStats:
         return await self.ingest_from_paged_endpoint(
             lambda page: self._tmdb_client.get_top_rated(page=page),
             max_pages=max_pages,
+            max_movies=max_movies,
         )
 
     async def ingest_discover(
@@ -192,10 +206,12 @@ class TMDbIngestionService:
         *,
         filters: dict[str, str | int | float],
         max_pages: int | None = None,
+        max_movies: int | None = None,
     ) -> IngestionStats:
         return await self.ingest_from_paged_endpoint(
             lambda page: self._tmdb_client.get_discover(page=page, **filters),
             max_pages=max_pages,
+            max_movies=max_movies,
         )
 
     async def ingest_trending(
@@ -203,10 +219,12 @@ class TMDbIngestionService:
         *,
         time_window: str = "day",
         max_pages: int | None = None,
+        max_movies: int | None = None,
     ) -> IngestionStats:
         return await self.ingest_from_paged_endpoint(
             lambda page: self._tmdb_client.get_trending(time_window=time_window, page=page),
             max_pages=max_pages,
+            max_movies=max_movies,
         )
 
     async def ingest_list(self, list_id: int) -> IngestionStats:

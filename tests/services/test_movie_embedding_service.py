@@ -52,6 +52,7 @@ async def test_generate_all_counts_pending_and_generated(
     service: MovieEmbeddingService,
 ) -> None:
     pending = [_movie_and_metadata(), _movie_and_metadata()]
+    service._repository.count_movies_without_embeddings.return_value = 2
     service._repository.list_movies_without_embeddings.return_value = pending
 
     stats = await service.generate_all()
@@ -63,8 +64,22 @@ async def test_generate_all_counts_pending_and_generated(
 
 
 @pytest.mark.asyncio
+async def test_generate_all_respects_limit(service: MovieEmbeddingService) -> None:
+    pending = [_movie_and_metadata()]
+    service._repository.count_movies_without_embeddings.return_value = 5
+    service._repository.list_movies_without_embeddings.return_value = pending
+
+    stats = await service.generate_all(limit=1)
+
+    assert stats.pending == 5
+    assert stats.generated == 1
+    service._repository.list_movies_without_embeddings.assert_awaited_once_with(limit=1)
+
+
+@pytest.mark.asyncio
 async def test_generate_all_records_failures(service: MovieEmbeddingService) -> None:
     pending = [_movie_and_metadata(), _movie_and_metadata()]
+    service._repository.count_movies_without_embeddings.return_value = 2
     service._repository.list_movies_without_embeddings.return_value = pending
 
     calls = {"n": 0}
@@ -86,6 +101,7 @@ async def test_generate_all_records_failures(service: MovieEmbeddingService) -> 
 
 @pytest.mark.asyncio
 async def test_generate_all_with_no_pending(service: MovieEmbeddingService) -> None:
+    service._repository.count_movies_without_embeddings.return_value = 0
     service._repository.list_movies_without_embeddings.return_value = []
 
     stats = await service.generate_all()

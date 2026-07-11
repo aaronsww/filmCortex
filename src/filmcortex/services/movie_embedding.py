@@ -59,12 +59,12 @@ class MovieEmbeddingService:
             model_revision=self._model_revision,
         )
 
-    async def generate_all(self) -> EmbeddingStats:
+    async def generate_all(self, *, limit: int | None = None) -> EmbeddingStats:
         stats = EmbeddingStats()
-        pending = await self._repository.list_movies_without_embeddings()
-        stats.pending = len(pending)
+        stats.pending = await self._repository.count_movies_without_embeddings()
+        batch = await self._repository.list_movies_without_embeddings(limit=limit)
 
-        for movie, metadata in pending:
+        for movie, metadata in batch:
             try:
                 await self.generate_for_movie(movie, metadata)
                 stats.generated += 1

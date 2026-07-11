@@ -24,7 +24,14 @@ class Settings(BaseSettings):
     tmdb_requests_per_second: float = 30.0
     tmdb_export_cache_dir: str = ".cache/tmdb_exports"
 
+    tmdb_initial_load_limit: int = 500
+    tmdb_daily_export_limit: int = 100
+    tmdb_trending_limit: int = 40
+    tmdb_top_rated_limit: int = 100
+    tmdb_discover_limit: int = 100
+
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
+    embedding_batch_size: int = 100
     embedding_dimensions: int = 384
 
 

@@ -122,6 +122,21 @@ async def test_ingest_trending(ingestion_service: TMDbIngestionService) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ingest_from_paged_endpoint_respects_max_movies(
+    ingestion_service: TMDbIngestionService,
+) -> None:
+    ingestion_service._tmdb_client.get_top_rated.side_effect = [
+        {"results": [{"id": 1}, {"id": 2}, {"id": 3}], "total_pages": 2},
+        {"results": [{"id": 4}], "total_pages": 2},
+    ]
+
+    stats = await ingestion_service.ingest_top_rated(max_movies=2)
+
+    assert stats.fetched == 2
+    assert ingestion_service._tmdb_client.get_top_rated.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_ingest_list(ingestion_service: TMDbIngestionService) -> None:
     stats = await ingestion_service.ingest_list(634)
     assert stats.fetched == 1
