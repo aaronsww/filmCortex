@@ -14,15 +14,14 @@ API: http://localhost:8000/docs
 
 ## Database migrations
 
-Migrations run automatically when the API container starts (`alembic upgrade head` in the entrypoint).
-
-To run them manually against the Docker database:
+Migrations are run manually against the Docker database:
 
 ```bash
 docker compose up -d db
 uv run alembic upgrade head
 ```
 
+> Note: `scripts/docker-entrypoint.sh` can run `alembic upgrade head`, but it is not currently wired into the API Dockerfile/compose flow.
 Verify pgvector is enabled:
 
 ```bash

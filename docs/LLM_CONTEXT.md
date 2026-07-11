@@ -70,15 +70,23 @@ filmCortex/
 ├── docker-compose.yml                # db + api services
 ├── Dockerfile                        # Python 3.12, uv sync, uvicorn
 ├── docs/
-│   ├── architecture.md               # System design (partially outdated — see §15)
-│   ├── roadmap.md                    # Milestones (partially outdated — see §15)
+│   ├── architecture.md               # Current system design
+│   ├── roadmap.md                    # Milestones
 │   ├── devlog/                       # Engineering journal
 │   └── LLM_CONTEXT.md                # This file
 ├── pipeline/                         # Offline batch jobs (NOT in src/)
 │   ├── jobs/
-│   │   ├── ingest_tmdb.py            # Fetch TMDb popular page → upsert DB
+│   │   ├── ingest_initial_load.py    # Export seed + top rated + discover
+│   │   ├── ingest_daily_export.py    # Daily ID export → new IDs
+│   │   ├── ingest_top_rated.py
+│   │   ├── ingest_discover.py
+│   │   ├── ingest_trending.py
+│   │   ├── ingest_list.py
+│   │   ├── ingest_tmdb.py            # Popular page (manual/smoke)
 │   │   └── generate_embeddings.py    # Generate embeddings for movies missing them
-│   └── shared/                       # Placeholder for shared pipeline utils
+│   └── shared/
+│       ├── job_context.py            # Shared DB/TMDb job setup
+│       └── limits.py                 # CLI vs settings limit resolver
 ├── pyproject.toml                    # Dependencies, pytest/ruff config
 ├── uv.lock
 ├── README.md
@@ -102,8 +110,10 @@ filmCortex/
 │   │   └── session.py                # Async engine + session factory
 │   ├── integrations/
 │   │   └── tmdb/
-│   │       ├── client.py             # Async TMDb HTTP client
-│   │       └── constants.py          # Provider name, payload version, base URL
+│   │       ├── client.py             # Async TMDb HTTP client (rate-limited)
+│   │       ├── constants.py          # Provider, append_to_response, discover sweeps
+│   │       ├── exports.py            # Daily ID export download/parse/diff
+│   │       └── rate_limit.py         # Token-bucket limiter
 │   ├── models/                       # SQLAlchemy ORM entities
 │   │   ├── movie.py
 │   │   ├── external_metadata.py
@@ -123,7 +133,7 @@ filmCortex/
 │   └── utils/
 │       ├── embedding_text.py         # Build natural-language doc from TMDb payload
 │       └── payload.py                # SHA-256 fingerprint for change detection
-└── tests/                            # pytest suite (14 test files)
+└── tests/                            # pytest suite (unit + integration)
 ```
 
 ---
@@ -272,24 +282,25 @@ class SimilarMovie(MovieListItem):
 Ingests movies from TMDb into PostgreSQL.
 
 **Flow per movie:**
-1. Fetch full movie detail from TMDb (`append_to_response=credits,keywords`)
+1. Fetch full movie detail from TMDb (`append_to_response` includes credits, keywords, external_ids, images, videos, alternative_titles, translations)
 2. Compute SHA-256 payload fingerprint
 3. If new → create `movies` row + `external_metadata` row → `"inserted"`
 4. If exists, fingerprint unchanged → `"skipped"`
 5. If exists, fingerprint changed → update title + payload → `"updated"`
 
-**Batch method:** `ingest_popular_page(page=1)` — fetches TMDb popular movies list, ingests each.
+**Batch methods:** `ingest_ids`, `ingest_from_paged_endpoint` (with `max_movies` / `max_pages`), `ingest_top_rated`, `ingest_discover`, `ingest_trending`, `ingest_list`, `ingest_daily_export`, `ingest_popular_page`.
 
 ### MovieEmbeddingService (`services/movie_embedding.py`)
 
 Offline embedding generation. Loads sentence-transformers model lazily.
 
 **Flow:**
-1. Find movies with active TMDb metadata but no embedding
-2. For each: build embedding text from payload → encode with model → upsert `movie_embeddings`
-3. Returns stats: `{pending, generated, failed}`
+1. Count movies with active TMDb metadata but no embedding (`pending`)
+2. Load a batch (default `EMBEDDING_BATCH_SIZE`, CLI `--limit` overrides)
+3. For each: build embedding text from payload → encode with model → upsert `movie_embeddings`
+4. Returns stats: `{pending, generated, failed}`
 
-**Idempotent:** Only processes movies without an embedding. Safe to re-run.
+**Idempotent for missing embeddings:** Only processes movies without an embedding. Does not yet re-embed when payloads change.
 
 ### MovieSimilarityService (`services/movie_similarity.py`)
 
@@ -311,10 +322,10 @@ Lists ingested movies for the API. Joins movies with active external metadata.
 | Repository | Key methods |
 |------------|-------------|
 | `MovieRepository` | `create()`, `update_title()` |
-| `ExternalMetadataRepository` | `create()`, `get_by_provider()`, `update_payload()`, `list_active_with_movies()` |
-| `MovieEmbeddingRepository` | `upsert()`, `get_by_movie_id()`, `list_movies_pending_embedding()`, `find_similar_by_cosine()` |
+| `ExternalMetadataRepository` | `create()`, `get_by_provider()`, `get_existing_provider_ids()`, `update_payload()`, `list_active_with_movies()` |
+| `MovieEmbeddingRepository` | `upsert()`, `get_by_movie_id()`, `count_movies_without_embeddings()`, `list_movies_without_embeddings(limit=)`, `find_similar()` |
 
-Vector search is in `MovieEmbeddingRepository.find_similar_by_cosine()` using pgvector's cosine distance operator.
+Vector search is in `MovieEmbeddingRepository.find_similar()` using pgvector's cosine distance operator.
 
 ---
 
@@ -326,13 +337,19 @@ Vector search is in `MovieEmbeddingRepository.find_similar_by_cosine()` using pg
 
 | Method | TMDb endpoint | Used by |
 |--------|---------------|---------|
-| `get_movie(movie_id)` | `GET /movie/{id}?append_to_response=credits,keywords` | Ingestion |
-| `get_popular(page)` | `GET /movie/popular` | Ingestion job |
+| `get_movie(movie_id)` | `GET /movie/{id}?append_to_response=...` | All ingest jobs |
+| `get_popular(page)` | `GET /movie/popular` | `ingest_tmdb` |
+| `get_top_rated(page)` | `GET /movie/top_rated` | `ingest_top_rated`, initial load |
+| `get_discover(page, **filters)` | `GET /discover/movie` | `ingest_discover`, initial load |
+| `get_trending(time_window, page)` | `GET /trending/movie/{window}` | `ingest_trending` |
+| `get_list(list_id)` | `GET /list/{id}` | `ingest_list` |
+| `get_collection(id)` | `GET /collection/{id}` | Available |
+| `get_movie_changes(...)` | `GET /movie/{id}/changes` | Available (no dedicated job yet) |
 | `search_movie(query)` | `GET /search/movie` | Implemented but unused |
 
-**Constants:** `TMDB_BASE_URL = https://api.themoviedb.org/3`, `TMDB_PROVIDER = "tmdb"`, `TMDB_PAYLOAD_VERSION = "2"`
+Daily exports are downloaded from `files.tmdb.org/p/exports/` (no API key) via `integrations/tmdb/exports.py`.
 
-**Auth:** `TMDB_API_KEY` env var, passed as query parameter.
+**Auth:** `TMDB_API_KEY` env var, passed as query parameter. Client rate-limits requests and retries on 429.
 
 ### Hugging Face / sentence-transformers — IMPLEMENTED (pipeline only)
 
@@ -355,30 +372,42 @@ Target consumer. Referenced in project description only.
 
 ## 10. Offline Pipeline Jobs
 
-Located in `pipeline/jobs/`. Run as Python modules, not registered CLI entry points.
+Located in `pipeline/jobs/`. Run as Python modules. Each job has a safe default batch limit from settings; CLI `--limit` (and related flags) override configuration. Jobs are scheduler-agnostic — wire them into cron/systemd/K8s later without changing app code. See [README](../README.md) for the recommended homelab schedule.
 
-### Ingest TMDb popular movies
+### Initial load (once)
 
 ```bash
-uv run python -m pipeline.jobs.ingest_tmdb
+uv run python -m pipeline.jobs.ingest_initial_load
 ```
 
-- Requires `TMDB_API_KEY`
-- Fetches TMDb popular page 1
-- Upserts movies + metadata
-- Prints: fetched, inserted, updated, skipped counts
+- Export seed (`TMDB_INITIAL_LOAD_LIMIT`) + top rated (`TMDB_TOP_RATED_LIMIT`) + discover sweeps (`TMDB_DISCOVER_LIMIT`)
+
+### Daily / weekly jobs
+
+```bash
+uv run python -m pipeline.jobs.ingest_daily_export    # TMDB_DAILY_EXPORT_LIMIT
+uv run python -m pipeline.jobs.ingest_trending        # TMDB_TRENDING_LIMIT
+uv run python -m pipeline.jobs.ingest_top_rated       # TMDB_TOP_RATED_LIMIT
+uv run python -m pipeline.jobs.ingest_discover --preset all   # TMDB_DISCOVER_LIMIT
+```
+
+### Manual
+
+```bash
+uv run python -m pipeline.jobs.ingest_list --list-id 634
+uv run python -m pipeline.jobs.ingest_tmdb --page 1
+```
 
 ### Generate embeddings
 
 ```bash
 uv sync --extra pipeline
-uv run python -m pipeline.jobs.generate_embeddings
+uv run python -m pipeline.jobs.generate_embeddings    # EMBEDDING_BATCH_SIZE
 ```
 
-- Processes movies missing embeddings
-- Idempotent — safe to re-run
-- Prints: pending, generated, failed counts
-
+- Processes a batch of movies missing embeddings
+- Idempotent for the missing-embedding backlog — safe to re-run
+- Prints: pending (total backlog), generated, failed counts
 ---
 
 ## 11. Embedding Text Builder
@@ -430,8 +459,16 @@ Language: English
 | `API_PORT` | `8000` | API port |
 | `DATABASE_URL` | `postgresql+asyncpg://filmcortex:filmcortex@localhost:5433/filmcortex` | Async PostgreSQL URL |
 | `TMDB_API_KEY` | `""` | Required for ingestion |
+| `TMDB_REQUESTS_PER_SECOND` | `30` | Client rate limit |
+| `TMDB_EXPORT_CACHE_DIR` | `.cache/tmdb_exports` | Daily export cache |
+| `TMDB_INITIAL_LOAD_LIMIT` | `500` | Initial load export step |
+| `TMDB_DAILY_EXPORT_LIMIT` | `100` | Daily export job |
+| `TMDB_TRENDING_LIMIT` | `40` | Trending job |
+| `TMDB_TOP_RATED_LIMIT` | `100` | Top rated job / initial load |
+| `TMDB_DISCOVER_LIMIT` | `100` | Discover job / initial load |
 | `EMBEDDING_MODEL_NAME` | `BAAI/bge-small-en-v1.5` | HuggingFace model |
 | `EMBEDDING_DIMENSIONS` | `384` | Must match model output |
+| `EMBEDDING_BATCH_SIZE` | `100` | Embeddings per job run |
 | `RADARR_URL` | — | Not implemented |
 | `RADARR_API_KEY` | — | Not implemented |
 
@@ -540,8 +577,9 @@ docker compose exec db psql -U filmcortex -d filmcortex -c \
 ### Run pipeline
 
 ```bash
-uv run python -m pipeline.jobs.ingest_tmdb
+uv run python -m pipeline.jobs.ingest_initial_load
 uv run python -m pipeline.jobs.generate_embeddings
+# thereafter: daily export / trending / weekly top_rated + discover (see README)
 ```
 
 ### Run tests
@@ -564,15 +602,16 @@ uv run ruff check .
 - [x] PostgreSQL 16 + pgvector via Docker
 - [x] Async SQLAlchemy + Alembic migrations (001, 002, 003)
 - [x] Core schema: `movies`, `external_metadata`, `movie_embeddings`
-- [x] TMDb client (get_movie, get_popular, search_movie)
-- [x] TMDb ingestion job with payload fingerprint change detection
+- [x] TMDb client (details, popular, top rated, discover, trending, lists, collections, changes, rate limiting)
+- [x] Multi-source ingestion jobs (initial load, daily export, top rated, discover, trending, lists, popular)
+- [x] Configurable homelab batch limits (settings / CLI overrides)
 - [x] Embedding text builder (pure function)
-- [x] Offline embedding generation job (sentence-transformers)
+- [x] Offline embedding generation job (sentence-transformers, batch-sized)
 - [x] Movie listing API (`GET /api/v1/movies`)
 - [x] Similar movies API (`GET /api/v1/movies/{id}/similar`)
 - [x] pgvector cosine similarity search
 - [x] Docker Compose (db + api)
-- [x] Test suite (14 files, unit + integration)
+- [x] Test suite (unit + integration)
 
 ### Not built (planned)
 
@@ -582,28 +621,28 @@ uv run ruff check .
 - [ ] Auto-generated collections (clustering)
 - [ ] Jellyfin integration
 - [ ] Radarr / ARR integration
-- [ ] Metadata refresh job
+- [ ] Metadata refresh job / Movie Changes–driven updates
+- [ ] Re-embed on payload change
 - [ ] Additional metadata providers (schema supports it)
 - [ ] API pagination, filtering, authentication
-- [ ] Full catalog sync / scheduling / backfill
+- [ ] Built-in scheduler (intentionally omitted — use external cron/systemd/K8s)
 - [ ] CI pipeline
 - [ ] Canonical Movie Document (provider-agnostic embedding source)
 - [ ] Natural-language discovery UX
-
+- [ ] Wire Docker entrypoint for auto-migrations
 ---
 
-## 19. Documentation Drift (Important)
+## 19. Documentation Notes
 
-Some docs are behind the code. Trust **this file** and the codebase over older docs.
+Keep `docs/architecture.md`, `docs/roadmap.md`, and this file in sync when milestones land. Prefer the codebase if a short-lived conflict remains.
 
-| Doc | Says | Reality |
-|-----|------|---------|
-| `docs/architecture.md` | Embedding pipeline "planned, not yet implemented" | **Implemented** — migration 003, embedding service, generate job, `/similar` API all exist |
-| `docs/roadmap.md` | "Current milestone: Embedding pipeline" | **Done** — similarity API is live |
-| `README.md` | Migrations run automatically on container start | **Incorrect** — entrypoint script exists but is not wired in Docker |
+| Doc | Role |
+|-----|------|
+| `docs/architecture.md` | How the system works today |
+| `docs/roadmap.md` | Done / current / upcoming |
+| `README.md` | Quick start, migrations, pipeline schedule + batch limits |
 
-When updating the project, consider syncing `architecture.md` and `roadmap.md`.
-
+Known operational gap: README historically claimed auto-migrations on API start; the entrypoint script exists but is **not wired** in Docker. Migrations are still manual (`uv run alembic upgrade head`).
 ---
 
 ## 20. Design Decisions Worth Knowing
@@ -618,35 +657,39 @@ When updating the project, consider syncing `architecture.md` and `roadmap.md`.
 
 5. **Fingerprint-based skip.** Ingestion avoids unnecessary DB writes when TMDb payload hasn't changed.
 
-6. **Idempotent embedding job.** Only processes movies without embeddings. Re-running is safe.
+6. **Idempotent embedding job.** Only processes movies without embeddings. Re-running is safe until the backlog clears (batch-sized).
 
-7. **Layered architecture with DI.** Repositories → Services → API, wired via FastAPI `Depends()`. Easy to mock in tests.
+7. **Homelab batch limits.** Defaults in settings prevent accidental full-catalog ingestion; CLI overrides for one-off runs. No built-in scheduler.
+
+8. **Layered architecture with DI.** Repositories → Services → API, wired via FastAPI `Depends()`. Easy to mock in tests.
 
 ---
 
 ## 21. Typical Data Flow (End to End)
 
 ```
-1. Operator runs:  uv run python -m pipeline.jobs.ingest_tmdb
-   → TMDb popular page fetched
+1. Operator runs:  uv run python -m pipeline.jobs.ingest_initial_load
+   → Daily ID export downloaded; limited IDs ingested
+   → Top rated + discover sweeps ingest notable films
    → For each movie: full detail fetched, fingerprint checked, upserted
    → Result: rows in `movies` + `external_metadata`
 
 2. Operator runs:  uv run python -m pipeline.jobs.generate_embeddings
-   → Finds movies without embeddings
+   → Finds a batch of movies without embeddings
    → Builds text doc from TMDb payload (title, overview, genres, cast, etc.)
    → Encodes with BAAI/bge-small-en-v1.5
    → Upserts into `movie_embeddings`
 
-3. Client calls:   GET /api/v1/movies
+3. Ongoing: daily export + trending; weekly top_rated + discover; then embeddings
+
+4. Client calls:   GET /api/v1/movies
    → Returns list of ingested movies
 
-4. Client calls:   GET /api/v1/movies/{id}/similar?include_scores=true
+5. Client calls:   GET /api/v1/movies/{id}/similar?include_scores=true
    → Looks up embedding for source movie
    → pgvector cosine search for nearest neighbors
    → Returns top 10 similar movies with optional scores
 ```
-
 ---
 
 ## 22. Key File Quick Reference
