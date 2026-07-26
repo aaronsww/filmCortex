@@ -68,6 +68,10 @@ class MovieEmbeddingRepository:
         )
         return [(movie, metadata, 1.0 - distance) for movie, metadata, distance in result.all()]
 
+    async def count(self) -> int:
+        result = await self._session.execute(select(func.count()).select_from(MovieEmbedding))
+        return int(result.scalar_one())
+
     async def count_movies_without_embeddings(self) -> int:
         result = await self._session.execute(
             select(func.count())

@@ -41,8 +41,10 @@ async def get_movie_embedding_repository(
 
 async def get_movie_query_service(
     metadata_repository: ExternalMetadataRepository = Depends(get_external_metadata_repository),
+    movie_repository: MovieRepository = Depends(get_movie_repository),
+    embedding_repository: MovieEmbeddingRepository = Depends(get_movie_embedding_repository),
 ) -> MovieQueryService:
-    return MovieQueryService(metadata_repository)
+    return MovieQueryService(metadata_repository, movie_repository, embedding_repository)
 
 
 async def get_movie_similarity_service(

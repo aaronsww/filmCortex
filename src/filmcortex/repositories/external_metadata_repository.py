@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from filmcortex.models.external_metadata import ExternalMetadata
@@ -102,13 +102,25 @@ class ExternalMetadataRepository:
             existing.update(result.scalars().all())
         return existing
 
-    async def list_active_with_movies(self) -> list[tuple[Movie, ExternalMetadata]]:
-        result = await self._session.execute(
+    async def list_active_with_movies(
+        self,
+        *,
+        limit: int,
+        after_title: str | None = None,
+        after_metadata_id: uuid.UUID | None = None,
+    ) -> list[tuple[Movie, ExternalMetadata]]:
+        stmt = (
             select(Movie, ExternalMetadata)
             .join(ExternalMetadata, ExternalMetadata.movie_id == Movie.id)
             .where(ExternalMetadata.is_active.is_(True))
-            .order_by(Movie.canonical_title)
         )
+        if after_title is not None and after_metadata_id is not None:
+            stmt = stmt.where(
+                tuple_(Movie.canonical_title, ExternalMetadata.id)
+                > (after_title, after_metadata_id)
+            )
+        stmt = stmt.order_by(Movie.canonical_title.asc(), ExternalMetadata.id.asc()).limit(limit)
+        result = await self._session.execute(stmt)
         return list(result.all())
 
     @staticmethod

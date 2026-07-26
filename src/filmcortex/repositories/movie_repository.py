@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from filmcortex.models.movie import MediaType, Movie
@@ -28,6 +28,10 @@ class MovieRepository:
             .where(Movie.id == movie_id)
             .values(canonical_title=canonical_title)
         )
+
+    async def count(self) -> int:
+        result = await self._session.execute(select(func.count()).select_from(Movie))
+        return int(result.scalar_one())
 
     async def list_all(self) -> list[Movie]:
         result = await self._session.execute(select(Movie).order_by(Movie.canonical_title))
