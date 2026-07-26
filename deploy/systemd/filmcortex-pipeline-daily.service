@@ -1,0 +1,20 @@
+[Unit]
+Description=FilmCortex daily pipeline (export, embeddings, trending)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aaron
+Group=aaron
+WorkingDirectory=/home/aaron/src/filmCortex
+Environment=HOME=/home/aaron
+Environment=PATH=/home/aaron/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/aaron/src/filmCortex/scripts/run_daily.sh
+Nice=10
+# Keep logs readable if a job fails mid-chain
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run FilmCortex daily pipeline at 03:30 UTC
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=filmcortex-pipeline-daily.service
+
+[Install]
+WantedBy=timers.target

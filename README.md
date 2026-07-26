@@ -54,6 +54,8 @@ Every job has a safe default batch limit (configurable in `.env`) so a homelab d
 
 FilmCortex is scheduler-agnostic: wire these commands into cron, systemd timers, Kubernetes CronJobs, GitHub Actions, or any other scheduler without changing application code.
 
+Homelab systemd timers (daily/weekly) live under [`deploy/systemd/`](deploy/systemd/README.md).
+
 ### Recommended homelab schedule
 
 **Initial setup (manual, once):**
