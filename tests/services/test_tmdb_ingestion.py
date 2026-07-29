@@ -42,6 +42,7 @@ def ingestion_service(tmdb_payload: dict) -> TMDbIngestionService:
 
     metadata_repository = AsyncMock()
     metadata_repository.get_by_provider.return_value = None
+    metadata_repository.get_existing_provider_ids.return_value = set()
 
     return TMDbIngestionService(
         tmdb_client=tmdb_client,
@@ -105,6 +106,7 @@ async def test_ingest_top_rated(ingestion_service: TMDbIngestionService) -> None
     stats = await ingestion_service.ingest_top_rated()
     assert stats.fetched == 1
     assert stats.inserted == 1
+    assert stats.next_page == 1
 
 
 @pytest.mark.asyncio
@@ -133,7 +135,80 @@ async def test_ingest_from_paged_endpoint_respects_max_movies(
     stats = await ingestion_service.ingest_top_rated(max_movies=2)
 
     assert stats.fetched == 2
+    assert stats.next_page == 1
     assert ingestion_service._tmdb_client.get_top_rated.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_top_rated_skips_existing_without_detail_fetch(
+    ingestion_service: TMDbIngestionService,
+) -> None:
+    ingestion_service._tmdb_client.get_top_rated.side_effect = [
+        {"results": [{"id": 550}, {"id": 551}], "total_pages": 1},
+    ]
+    ingestion_service._metadata_repository.get_existing_provider_ids.return_value = {"550"}
+    ingestion_service._tmdb_client.get_movie.side_effect = [
+        {"id": 551, "title": "New Film"},
+    ]
+
+    stats = await ingestion_service.ingest_top_rated(skip_existing=True)
+
+    assert stats.skipped == 1
+    assert stats.fetched == 1
+    assert stats.inserted == 1
+    ingestion_service._tmdb_client.get_movie.assert_awaited_once_with(551)
+    ingestion_service._metadata_repository.get_existing_provider_ids.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ingest_top_rated_resume_cursor_and_wrap(
+    ingestion_service: TMDbIngestionService,
+) -> None:
+    ingestion_service._tmdb_client.get_top_rated.side_effect = [
+        {"results": [{"id": 10}], "total_pages": 2},
+        {"results": [{"id": 11}], "total_pages": 2},
+    ]
+    ingestion_service._tmdb_client.get_movie.side_effect = [
+        {"id": 10, "title": "A"},
+        {"id": 11, "title": "B"},
+    ]
+
+    stats = await ingestion_service.ingest_top_rated(
+        start_page=2,
+        skip_existing=True,
+        wrap=True,
+    )
+
+    assert stats.fetched == 1
+    assert stats.inserted == 1
+    assert stats.pages_scanned == 1
+    assert stats.next_page == 1
+    ingestion_service._tmdb_client.get_top_rated.assert_awaited_once_with(page=2)
+
+
+@pytest.mark.asyncio
+async def test_ingest_top_rated_stops_mid_page_and_resumes_same_page(
+    ingestion_service: TMDbIngestionService,
+) -> None:
+    ingestion_service._tmdb_client.get_top_rated.side_effect = [
+        {"results": [{"id": 1}, {"id": 2}, {"id": 3}], "total_pages": 5},
+    ]
+    ingestion_service._metadata_repository.get_existing_provider_ids.return_value = set()
+    ingestion_service._tmdb_client.get_movie.side_effect = [
+        {"id": 1, "title": "One"},
+        {"id": 2, "title": "Two"},
+    ]
+
+    stats = await ingestion_service.ingest_top_rated(
+        start_page=3,
+        max_movies=2,
+        skip_existing=True,
+        wrap=True,
+    )
+
+    assert stats.fetched == 2
+    assert stats.inserted == 2
+    assert stats.next_page == 3
 
 
 @pytest.mark.asyncio

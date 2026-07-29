@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     tmdb_api_key: str = ""
     tmdb_requests_per_second: float = 30.0
     tmdb_export_cache_dir: str = ".cache/tmdb_exports"
+    tmdb_top_rated_cursor_path: str = ".cache/tmdb_pipeline/top_rated_next_page"
 
     tmdb_initial_load_limit: int = 500
     tmdb_daily_export_limit: int = 100

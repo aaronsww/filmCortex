@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Literal
 
 from filmcortex.integrations.tmdb.client import TMDbClient
-from filmcortex.integrations.tmdb.constants import TMDB_PAYLOAD_VERSION, TMDB_PROVIDER
+from filmcortex.integrations.tmdb.constants import (
+    TMDB_LIST_MAX_PAGE,
+    TMDB_PAYLOAD_VERSION,
+    TMDB_PROVIDER,
+)
 from filmcortex.integrations.tmdb.exports import (
     diff_movie_ids,
     download_daily_export,
@@ -37,6 +41,14 @@ class IngestionStats:
         self.updated += other.updated
         self.skipped += other.skipped
         self.failed += other.failed
+
+
+@dataclass
+class PagedIngestionStats(IngestionStats):
+    """Paged list crawl stats, including where the next run should resume."""
+
+    next_page: int = 1
+    pages_scanned: int = 0
 
 
 @dataclass
@@ -145,23 +157,55 @@ class TMDbIngestionService:
         max_pages: int | None = None,
         max_movies: int | None = None,
         start_page: int = 1,
-    ) -> IngestionStats:
-        stats = IngestionStats()
-        page = start_page
-        movies_processed = 0
+        skip_existing: bool = False,
+        wrap: bool = False,
+        max_page_number: int = TMDB_LIST_MAX_PAGE,
+    ) -> PagedIngestionStats:
+        stats = PagedIngestionStats()
+        page = max(1, min(start_page, max_page_number))
+        detail_fetches = 0
 
         while True:
             response = await fetch_page(page)
             results = response.get("results", [])
+            stats.pages_scanned += 1
+
+            reported_total = int(response.get("total_pages", page) or page)
+            last_page = max(1, min(reported_total, max_page_number))
+
+            if page > last_page:
+                if wrap and page != 1:
+                    page = 1
+                    continue
+                stats.next_page = 1 if wrap else last_page
+                return stats
+
             if not results:
-                break
+                stats.next_page = 1 if wrap else page
+                return stats
 
+            existing: set[str] = set()
+            if skip_existing:
+                provider_ids = [str(item["id"]) for item in results if "id" in item]
+                existing = await self._metadata_repository.get_existing_provider_ids(
+                    provider=TMDB_PROVIDER,
+                    provider_ids=provider_ids,
+                )
+
+            hit_movie_limit = False
             for item in results:
-                if max_movies is not None and movies_processed >= max_movies:
-                    return stats
-
+                if "id" not in item:
+                    continue
                 tmdb_id = item["id"]
-                movies_processed += 1
+                if skip_existing and str(tmdb_id) in existing:
+                    stats.skipped += 1
+                    continue
+
+                if max_movies is not None and detail_fetches >= max_movies:
+                    hit_movie_limit = True
+                    break
+
+                detail_fetches += 1
                 stats.fetched += 1
                 result = await self.ingest_movie(tmdb_id)
                 if result == "inserted":
@@ -173,16 +217,22 @@ class TMDbIngestionService:
                 else:
                     stats.failed += 1
 
-            total_pages = response.get("total_pages", page)
-            if page >= total_pages:
-                break
-            if max_pages is not None and page - start_page + 1 >= max_pages:
-                break
+            if hit_movie_limit:
+                # Resume on the same page; already-ingested IDs will be skipped next run.
+                stats.next_page = page
+                return stats
+
+            if page >= last_page:
+                stats.next_page = 1 if wrap else page
+                return stats
+
+            if max_pages is not None and stats.pages_scanned >= max_pages:
+                stats.next_page = page + 1
+                return stats
+
             page += 1
 
-        return stats
-
-    async def ingest_popular_page(self, page: int = 1) -> IngestionStats:
+    async def ingest_popular_page(self, page: int = 1) -> PagedIngestionStats:
         return await self.ingest_from_paged_endpoint(
             lambda current_page: self._tmdb_client.get_popular(page=current_page),
             max_pages=1,
@@ -194,11 +244,17 @@ class TMDbIngestionService:
         *,
         max_pages: int | None = None,
         max_movies: int | None = None,
-    ) -> IngestionStats:
+        start_page: int = 1,
+        skip_existing: bool = False,
+        wrap: bool = False,
+    ) -> PagedIngestionStats:
         return await self.ingest_from_paged_endpoint(
             lambda page: self._tmdb_client.get_top_rated(page=page),
             max_pages=max_pages,
             max_movies=max_movies,
+            start_page=start_page,
+            skip_existing=skip_existing,
+            wrap=wrap,
         )
 
     async def ingest_discover(
@@ -207,11 +263,13 @@ class TMDbIngestionService:
         filters: dict[str, str | int | float],
         max_pages: int | None = None,
         max_movies: int | None = None,
-    ) -> IngestionStats:
+        skip_existing: bool = False,
+    ) -> PagedIngestionStats:
         return await self.ingest_from_paged_endpoint(
             lambda page: self._tmdb_client.get_discover(page=page, **filters),
             max_pages=max_pages,
             max_movies=max_movies,
+            skip_existing=skip_existing,
         )
 
     async def ingest_trending(
@@ -220,11 +278,13 @@ class TMDbIngestionService:
         time_window: str = "day",
         max_pages: int | None = None,
         max_movies: int | None = None,
-    ) -> IngestionStats:
+        skip_existing: bool = False,
+    ) -> PagedIngestionStats:
         return await self.ingest_from_paged_endpoint(
             lambda page: self._tmdb_client.get_trending(time_window=time_window, page=page),
             max_pages=max_pages,
             max_movies=max_movies,
+            skip_existing=skip_existing,
         )
 
     async def ingest_list(self, list_id: int) -> IngestionStats:

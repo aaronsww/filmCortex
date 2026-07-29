@@ -1,5 +1,5 @@
 [Unit]
-Description=FilmCortex weekly pipeline (top rated, discover, embeddings)
+Description=FilmCortex weekly pipeline (discover, trending, embeddings)
 After=network-online.target docker.service
 Wants=network-online.target
 

@@ -46,10 +46,11 @@ Every job has a safe default batch limit (configurable in `.env`) so a homelab d
 | Setting | Default | Used by |
 |---------|---------|---------|
 | `TMDB_INITIAL_LOAD_LIMIT` | 500 | `ingest_initial_load` (export step) |
-| `TMDB_DAILY_EXPORT_LIMIT` | 100 | `ingest_daily_export` |
+| `TMDB_DAILY_EXPORT_LIMIT` | 100 | `ingest_daily_export` (manual) |
 | `TMDB_TRENDING_LIMIT` | 40 | `ingest_trending` |
 | `TMDB_TOP_RATED_LIMIT` | 100 | `ingest_top_rated`, `ingest_initial_load` |
 | `TMDB_DISCOVER_LIMIT` | 100 | `ingest_discover`, `ingest_initial_load` |
+| `TMDB_TOP_RATED_CURSOR_PATH` | `.cache/tmdb_pipeline/top_rated_next_page` | daily top-rated resume |
 | `EMBEDDING_BATCH_SIZE` | 100 | `generate_embeddings` |
 
 FilmCortex is scheduler-agnostic: wire these commands into cron, systemd timers, Kubernetes CronJobs, GitHub Actions, or any other scheduler without changing application code.
@@ -68,22 +69,24 @@ uv run python -m pipeline.jobs.generate_embeddings
 **Daily:**
 
 ```bash
-uv run python -m pipeline.jobs.ingest_daily_export
+uv run python -m pipeline.jobs.ingest_top_rated
 uv run python -m pipeline.jobs.generate_embeddings
-uv run python -m pipeline.jobs.ingest_trending
 ```
+
+Top-rated resumes from a saved page cursor (~100 new detail fetches/day, wraps after TMDb's ~500-page cap). IDs already in the DB are skipped.
 
 **Weekly:**
 
 ```bash
-uv run python -m pipeline.jobs.ingest_top_rated
 uv run python -m pipeline.jobs.ingest_discover --preset all
+uv run python -m pipeline.jobs.ingest_trending
 uv run python -m pipeline.jobs.generate_embeddings
 ```
 
 **Manual (as needed):**
 
 ```bash
+uv run python -m pipeline.jobs.ingest_daily_export
 uv run python -m pipeline.jobs.ingest_list --list-id 634
 uv run python -m pipeline.jobs.ingest_tmdb --page 1
 ```

@@ -32,17 +32,24 @@ async def run(
     filters: dict[str, str | int | float],
     limit: int,
     max_pages: int | None,
+    skip_existing: bool,
 ) -> None:
     async with ingestion_job() as context:
         stats = await context.ingestion_service.ingest_discover(
             filters=filters,
             max_pages=max_pages,
             max_movies=limit,
+            skip_existing=skip_existing,
         )
     print_ingestion_stats(stats, label="Discover")
 
 
-async def run_presets(*, limit: int, max_pages: int | None) -> None:
+async def run_presets(
+    *,
+    limit: int,
+    max_pages: int | None,
+    skip_existing: bool,
+) -> None:
     total_stats = None
     remaining = limit
     async with ingestion_job() as context:
@@ -54,6 +61,7 @@ async def run_presets(*, limit: int, max_pages: int | None) -> None:
                 filters=filters,
                 max_pages=max_pages,
                 max_movies=remaining,
+                skip_existing=skip_existing,
             )
             print_ingestion_stats(stats, label=f"Sweep {index}")
             remaining -= stats.fetched
@@ -93,7 +101,7 @@ def main() -> None:
         type=int,
         default=None,
         help=(
-            "Maximum number of movies to ingest "
+            "Maximum number of new movie detail fetches "
             f"(default: {settings.tmdb_discover_limit} from TMDB_DISCOVER_LIMIT; "
             "shared across sweeps when using --preset all)"
         ),
@@ -104,15 +112,30 @@ def main() -> None:
         default=None,
         help="Optional page cap per sweep (in addition to --limit)",
     )
+    parser.add_argument(
+        "--refresh-existing",
+        action="store_true",
+        help="Detail-fetch movies already in the database (default: skip them)",
+    )
     args = parser.parse_args()
     limit = resolve_limit(args.limit, settings.tmdb_discover_limit)
+    skip_existing = not args.refresh_existing
 
     if args.preset == "all":
-        asyncio.run(run_presets(limit=limit, max_pages=args.max_pages))
+        asyncio.run(
+            run_presets(limit=limit, max_pages=args.max_pages, skip_existing=skip_existing)
+        )
         return
 
     filters = _build_filters(args)
-    asyncio.run(run(filters=filters, limit=limit, max_pages=args.max_pages))
+    asyncio.run(
+        run(
+            filters=filters,
+            limit=limit,
+            max_pages=args.max_pages,
+            skip_existing=skip_existing,
+        )
+    )
 
 
 if __name__ == "__main__":

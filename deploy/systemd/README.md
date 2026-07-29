@@ -6,10 +6,12 @@ Homelab scheduling for the offline pipeline on Ubuntu (e.g. lab1). Application c
 
 | Timer | When | Jobs |
 |-------|------|------|
-| `filmcortex-pipeline-daily.timer` | every day 03:30 | `ingest_daily_export` → `generate_embeddings` → `ingest_trending` |
-| `filmcortex-pipeline-weekly.timer` | Sunday 04:30 | `ingest_top_rated` → `ingest_discover --preset all` → `generate_embeddings` |
+| `filmcortex-pipeline-daily.timer` | every day 03:30 | `ingest_top_rated` (resumable ~100/day) → `generate_embeddings` |
+| `filmcortex-pipeline-weekly.timer` | Sunday 04:30 | `ingest_discover --preset all` → `ingest_trending` → `generate_embeddings` |
 
 `Persistent=true` catches up if the machine was off at fire time. Daily and weekly share a flock so they do not overlap.
+
+Daily top-rated walks TMDb pages toward the API's ~500-page cap, persisting resume state under `.cache/tmdb_pipeline/top_rated_next_page`. Already-ingested TMDb IDs are skipped (no detail refetch) unless `--refresh-existing` is used.
 
 ## Prerequisites (lab1)
 

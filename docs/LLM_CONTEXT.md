@@ -385,12 +385,17 @@ uv run python -m pipeline.jobs.ingest_initial_load
 ### Daily / weekly jobs
 
 ```bash
-uv run python -m pipeline.jobs.ingest_daily_export    # TMDB_DAILY_EXPORT_LIMIT
-uv run python -m pipeline.jobs.ingest_trending        # TMDB_TRENDING_LIMIT
+# Daily (resumable top-rated crawl; skips IDs already in DB)
 uv run python -m pipeline.jobs.ingest_top_rated       # TMDB_TOP_RATED_LIMIT
+uv run python -m pipeline.jobs.generate_embeddings
+
+# Weekly
 uv run python -m pipeline.jobs.ingest_discover --preset all   # TMDB_DISCOVER_LIMIT
+uv run python -m pipeline.jobs.ingest_trending        # TMDB_TRENDING_LIMIT
+uv run python -m pipeline.jobs.generate_embeddings
 ```
 
+`ingest_daily_export` remains available manually but is not on the homelab schedule.
 ### Manual
 
 ```bash

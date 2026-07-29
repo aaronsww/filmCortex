@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Daily FilmCortex pipeline: export → embeddings → trending.
+# Daily FilmCortex pipeline: top_rated (resumable) → embeddings.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,7 +15,6 @@ if ! flock -n 9; then
 fi
 
 echo "[filmcortex] daily pipeline start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-uv run python -m pipeline.jobs.ingest_daily_export
+uv run python -m pipeline.jobs.ingest_top_rated
 uv run python -m pipeline.jobs.generate_embeddings
-uv run python -m pipeline.jobs.ingest_trending
 echo "[filmcortex] daily pipeline done $(date -u +%Y-%m-%dT%H:%M:%SZ)"

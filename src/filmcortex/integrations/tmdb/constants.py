@@ -2,6 +2,8 @@ TMDB_PROVIDER = "tmdb"
 TMDB_PAYLOAD_VERSION = "2"
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_EXPORT_BASE_URL = "https://files.tmdb.org/p/exports"
+# TMDb list endpoints reject pages beyond this (≈10k results at 20/page).
+TMDB_LIST_MAX_PAGE = 500
 
 # Combined in a single movie details request via append_to_response.
 TMDB_APPEND_TO_RESPONSE = (
